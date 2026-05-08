@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flight Controller Test Bench</title>
+<style>
+  body { font-family: monospace; background: #111; color: #e0e0e0; margin: 0; padding: 16px; }
+  h1   { font-size: 1rem; color: #7cf; margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 900px; }
+  section { background: #1c1c1c; border: 1px solid #333; border-radius: 6px; padding: 12px; }
+  h2   { font-size: 0.8rem; color: #aaa; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+  label { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 0.78rem; }
+  label span { width: 120px; flex-shrink: 0; }
+  input[type=range] { flex: 1; accent-color: #7cf; }
+  .val  { width: 52px; text-align: right; color: #fc7; }
+  .mode-btn { background:#2a2a2a; border:1px solid #555; color:#e0e0e0; padding:4px 10px;
+              border-radius:4px; cursor:pointer; font-family:monospace; font-size:0.8rem; }
+  .mode-btn.active { background:#7cf; color:#111; }
+  #output { background:#0e0e0e; border:1px solid #333; border-radius:6px;
+            padding:12px; font-size:0.8rem; max-width:900px; margin-top:12px; }
+  .line { display:flex; gap: 8px; margin: 2px 0; }
+  .lbl  { color:#aaa; width:160px; flex-shrink:0; }
+  .nums { color:#7fc; }
+  .sanity { color: #fa0; margin-top:6px; font-size:0.75rem; }
+</style>
+</head>
+<body>
+<h1>FPV Drone — Flight Controller Test Bench (Stream C)</h1>
+
+<div class="grid">
+  <section>
+    <h2>Stick Inputs</h2>
+    <label><span>Throttle (0..1)</span><input type="range" id="throttle" min="0" max="1" step="0.01" value="0.5"><span class="val" id="v-throttle">0.50</span></label>
+    <label><span>Yaw (−1..1)</span>   <input type="range" id="yaw"      min="-1" max="1" step="0.01" value="0"><span class="val" id="v-yaw">0.00</span></label>
+    <label><span>Pitch (−1..1)</span> <input type="range" id="pitch"    min="-1" max="1" step="0.01" value="0"><span class="val" id="v-pitch">0.00</span></label>
+    <label><span>Roll (−1..1)</span>  <input type="range" id="roll"     min="-1" max="1" step="0.01" value="0"><span class="val" id="v-roll">0.00</span></label>
+  </section>
+
+  <section>
+    <h2>Synthetic Drone State</h2>
+    <label><span>Current Roll (rad)</span>  <input type="range" id="s-roll"  min="-1.57" max="1.57" step="0.01" value="0"><span class="val" id="v-s-roll">0.00</span></label>
+    <label><span>Current Pitch (rad)</span> <input type="range" id="s-pitch" min="-1.55" max="1.55" step="0.01" value="0"><span class="val" id="v-s-pitch">0.00</span></label>
+    <label><span>ω pitch (rad/s)</span>     <input type="range" id="s-wp"    min="-14" max="14" step="0.1" value="0"><span class="val" id="v-s-wp">0.00</span></label>
+    <label><span>ω yaw (rad/s)</span>       <input type="range" id="s-wy"    min="-14" max="14" step="0.1" value="0"><span class="val" id="v-s-wy">0.00</span></label>
+    <label><span>ω roll (rad/s)</span>      <input type="range" id="s-wr"    min="-14" max="14" step="0.1" value="0"><span class="val" id="v-s-wr">0.00</span></label>
+  </section>
+</div>
+
+<section style="margin-top:12px;max-width:900px;background:#1c1c1c;border:1px solid #333;border-radius:6px;padding:12px;">
+  <h2>Mode</h2>
+  <button class="mode-btn active" id="btn-arcade" onclick="setMode('arcade')">Arcade</button>
+  <button class="mode-btn"        id="btn-acro"   onclick="setMode('acro')">Acro</button>
+</section>
+
+<div id="output"></div>
+
+<script>
+// ---- Inline port of the flight controller math (no bundler needed) --------
+
+const THRUST_MAX_N  = 15;
+const RATE_MAX_RAD_S = 14;
+const STICK_EXPO    = 2.5;
+const KP_RATE       = 0.04;
+const KP_ATTITUDE   = 6;
+const MAX_BANK_RAD  = Math.PI / 3;
+const THROTTLE_CURVE = 1.5;
+const MASS_KG       = 0.5;
+const GRAVITY       = 9.81;
+const HOVER_THROTTLE = (MASS_KG * GRAVITY) / THRUST_MAX_N;
+
+function expo(x) { return Math.sign(x) * Math.pow(Math.abs(x), STICK_EXPO); }
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+function rotateVecByInverseQuat(v, q) {
+  const [qx, qy, qz, qw] = q;
+  const cx = -qx, cy = -qy, cz = -qz, cw = qw;
+  const tx = 2*(cy*v[2]-cz*v[1]);
+  const ty = 2*(cz*v[0]-cx*v[2]);
+  const tz = 2*(cx*v[1]-cy*v[0]);
+  return [v[0]+cw*tx+(cy*tz-cz*ty), v[1]+cw*ty+(cz*tx-cx*tz), v[2]+cw*tz+(cx*ty-cy*tx)];
+}
+
+function eulerToQuat(rollRad, pitchRad) {
+  // Build quaternion from roll (Z) and pitch (X), yaw=0
+  // q = qZ(roll) * qX(pitch)
+  const cr = Math.cos(rollRad/2),  sr = Math.sin(rollRad/2);
+  const cp = Math.cos(pitchRad/2), sp = Math.sin(pitchRad/2);
+  // q_Z = [0, 0, sin(r/2), cos(r/2)]
+  // q_X = [sin(p/2), 0, 0, cos(p/2)]
+  // product (Z first, then X):
+  //   x = cr*sp,  y = sr*sp,  z = sr*cp, w = cr*cp
+  return [cr*sp, sr*sp, sr*cp, cr*cp]; // [x,y,z,w]
+}
+
+function quatToRollPitch(q) {
+  const [x, y, z, w] = q;
+  const sinPitch = clamp(2*(w*x - y*z), -1, 1);
+  const PLIM = Math.PI/2 - 0.01;
+  const pitch = clamp(Math.asin(sinPitch), -PLIM, PLIM);
+  const r10 = 2*(x*y + w*z);
+  const r11 = 1 - 2*(x*x + z*z);
+  const roll = Math.atan2(r10, r11);
+  return { roll, pitch };
+}
+
+function computeThrust(throttle) {
+  const t = clamp(throttle, 0, 1);
+  return [0, THRUST_MAX_N * Math.pow(t, THROTTLE_CURVE), 0];
+}
+
+function arcadeThrottle(rawThrottle) {
+  const eff = clamp(HOVER_THROTTLE + (rawThrottle - 0.5)*1.5, 0, 1);
+  return computeThrust(eff);
+}
+
+function rateLoopTorque(target, current) {
+  return [
+    KP_RATE*(target[0]-current[0]),
+    KP_RATE*(target[1]-current[1]),
+    KP_RATE*(target[2]-current[2]),
+  ];
+}
+
+function computeAcro(input, state) {
+  const force = computeThrust(input.throttle);
+  const targetRates = [
+    expo(input.pitch) * RATE_MAX_RAD_S,
+    expo(input.yaw)   * RATE_MAX_RAD_S,
+    expo(input.roll)  * RATE_MAX_RAD_S,
+  ];
+  const bodyOmega = rotateVecByInverseQuat(state.angularVelocity, state.quaternion);
+  const torque = rateLoopTorque(targetRates, bodyOmega);
+  return { force, torque };
+}
+
+function computeArcade(input, state) {
+  const force = arcadeThrottle(input.throttle);
+  const { roll: cRoll, pitch: cPitch } = quatToRollPitch(state.quaternion);
+  const tRoll  = expo(input.roll)  * MAX_BANK_RAD;
+  const tPitch = expo(input.pitch) * MAX_BANK_RAD;
+  const tPitchRate = clamp(KP_ATTITUDE*(tPitch-cPitch), -RATE_MAX_RAD_S, RATE_MAX_RAD_S);
+  const tRollRate  = clamp(KP_ATTITUDE*(tRoll -cRoll ), -RATE_MAX_RAD_S, RATE_MAX_RAD_S);
+  const tYawRate   = expo(input.yaw) * RATE_MAX_RAD_S;
+  const targetRates = [tPitchRate, tYawRate, tRollRate];
+  const bodyOmega = rotateVecByInverseQuat(state.angularVelocity, state.quaternion);
+  const torque = rateLoopTorque(targetRates, bodyOmega);
+  return { force, torque };
+}
+
+// ---- UI glue ---------------------------------------------------------------
+
+let currentMode = 'arcade';
+
+function setMode(m) {
+  currentMode = m;
+  document.getElementById('btn-arcade').classList.toggle('active', m==='arcade');
+  document.getElementById('btn-acro').classList.toggle('active',   m==='acro');
+  update();
+}
+
+function sliderVal(id) { return parseFloat(document.getElementById(id).value); }
+
+function update() {
+  const throttle = sliderVal('throttle');
+  const yaw      = sliderVal('yaw');
+  const pitch    = sliderVal('pitch');
+  const roll     = sliderVal('roll');
+  const sRoll    = sliderVal('s-roll');
+  const sPitch   = sliderVal('s-pitch');
+  const sWp      = sliderVal('s-wp');
+  const sWy      = sliderVal('s-wy');
+  const sWr      = sliderVal('s-wr');
+
+  document.getElementById('v-throttle').textContent = throttle.toFixed(2);
+  document.getElementById('v-yaw').textContent      = yaw.toFixed(2);
+  document.getElementById('v-pitch').textContent    = pitch.toFixed(2);
+  document.getElementById('v-roll').textContent     = roll.toFixed(2);
+  document.getElementById('v-s-roll').textContent   = sRoll.toFixed(2);
+  document.getElementById('v-s-pitch').textContent  = sPitch.toFixed(2);
+  document.getElementById('v-s-wp').textContent     = sWp.toFixed(2);
+  document.getElementById('v-s-wy').textContent     = sWy.toFixed(2);
+  document.getElementById('v-s-wr').textContent     = sWr.toFixed(2);
+
+  const q = eulerToQuat(sRoll, sPitch);
+  // World-frame angular velocity from body-frame sliders:
+  // rotate body rates into world frame (forward rotation)
+  const [qx,qy,qz,qw] = q;
+  const bv = [sWp, sWy, sWr];
+  const tx = 2*(qy*bv[2]-qz*bv[1]);
+  const ty = 2*(qz*bv[0]-qx*bv[2]);
+  const tz = 2*(qx*bv[1]-qy*bv[0]);
+  const worldOmega = [bv[0]+qw*tx+(qy*tz-qz*ty), bv[1]+qw*ty+(qz*tx-qx*tz), bv[2]+qw*tz+(qx*ty-qy*tx)];
+
+  const state = { position:[0,1.5,0], quaternion:q, linearVelocity:[0,0,0],
+                  angularVelocity:worldOmega, throttle, rpm:0 };
+  const input = { throttle, yaw, pitch, roll, modeToggle:false, reset:false };
+
+  const result = currentMode==='acro' ? computeAcro(input,state) : computeArcade(input,state);
+
+  const hoverForce = MASS_KG * GRAVITY;
+  const sanity_force  = Math.abs(result.force[1] - hoverForce) < 0.5 && Math.hypot(...result.torque) < 0.05;
+  const sanityText = (throttle===0.5 && yaw===0 && pitch===0 && roll===0 && sRoll===0 && sPitch===0 && sWp===0 && sWy===0 && sWr===0)
+    ? (currentMode==='arcade' && sanity_force
+        ? '✓ Sanity OK: force[1] ≈ MASS×g, torque ≈ 0'
+        : currentMode==='arcade' ? `✗ Sanity FAIL: force[1]=${result.force[1].toFixed(3)} (want ~${hoverForce.toFixed(3)}), |torque|=${Math.hypot(...result.torque).toFixed(4)}`
+        : '(acro mode: sanity check applies to arcade only)')
+    : '(adjust sliders to zero-input / level state to see sanity check)';
+
+  const fmt = v => v.map(x => x.toFixed(4).padStart(9)).join(', ');
+
+  document.getElementById('output').innerHTML = `
+    <div class="line"><span class="lbl">Mode</span><span class="nums">${currentMode}</span></div>
+    <div class="line"><span class="lbl">force  [X, Y, Z] (N)</span><span class="nums">[${fmt(result.force)}]</span></div>
+    <div class="line"><span class="lbl">torque [X, Y, Z] (N·m)</span><span class="nums">[${fmt(result.torque)}]</span></div>
+    <div class="line"><span class="lbl">quaternion [x,y,z,w]</span><span class="nums">[${fmt(q)}]</span></div>
+    <div class="line"><span class="lbl">HOVER_THROTTLE</span><span class="nums">${HOVER_THROTTLE.toFixed(4)}</span></div>
+    <div class="line"><span class="lbl">MASS×g (N)</span><span class="nums">${hoverForce.toFixed(4)}</span></div>
+    <div class="sanity">${sanityText}</div>
+  `;
+}
+
+document.querySelectorAll('input[type=range]').forEach(el => el.addEventListener('input', update));
+update();
+</script>
+</body>
+</html>

@@ -26,3 +26,11 @@ export const MAX_BANK_RAD = Math.PI / 3;
 
 /** Throttle curve exponent (1 = linear, >1 = soft low-end). */
 export const THROTTLE_CURVE = 1.5;
+
+/**
+ * Arcade hover throttle: the normalized throttle value at which thrust exactly
+ * cancels gravity.  Derived from MASS_KG * GRAVITY / THRUST_MAX_N.
+ * Import MASS_KG / GRAVITY from shared/constants to keep one source of truth.
+ */
+import { GRAVITY, MASS_KG } from '../shared/constants.ts';
+export const HOVER_THROTTLE = (MASS_KG * GRAVITY) / THRUST_MAX_N;
