@@ -21,6 +21,9 @@ export interface SimSettings {
   expo: number;        // 1 – 4
   fov: number;         // 90 – 140
   volume: number;      // 0 – 100
+  invertRoll: boolean;
+  invertPitch: boolean;
+  invertYaw: boolean;
 }
 
 const DEFAULTS: SimSettings = {
@@ -29,6 +32,9 @@ const DEFAULTS: SimSettings = {
   expo: 2.0,
   fov: 110,
   volume: 70,
+  invertRoll: false,
+  invertPitch: false,
+  invertYaw: false,
 };
 
 function loadSettings(): SimSettings {
@@ -336,6 +342,45 @@ function buildOverlay(s: SimSettings): HTMLElement {
   const hr2 = document.createElement('hr');
   hr2.className = 'fpv-menu-divider';
   card.appendChild(hr2);
+
+  // Inversion toggles
+  function makeToggle(
+    label: string,
+    initial: boolean,
+    onChange: (v: boolean) => void,
+  ): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'fpv-menu-row';
+
+    const lbl = document.createElement('span');
+    lbl.className = 'fpv-menu-label';
+    lbl.textContent = label;
+
+    const btn = document.createElement('button');
+    btn.className = 'fpv-mode-btn' + (initial ? ' active' : '');
+    btn.textContent = initial ? 'On' : 'Off';
+    btn.addEventListener('click', () => {
+      const next = !btn.classList.contains('active');
+      btn.classList.toggle('active', next);
+      btn.textContent = next ? 'On' : 'Off';
+      onChange(next);
+    });
+
+    row.appendChild(lbl);
+    row.appendChild(btn);
+    return row;
+  }
+
+  card.appendChild(makeToggle('Invert Roll', s.invertRoll,
+    (v) => { s.invertRoll = v; saveSettings(s); }));
+  card.appendChild(makeToggle('Invert Pitch', s.invertPitch,
+    (v) => { s.invertPitch = v; saveSettings(s); }));
+  card.appendChild(makeToggle('Invert Yaw', s.invertYaw,
+    (v) => { s.invertYaw = v; saveSettings(s); }));
+
+  const hr3 = document.createElement('hr');
+  hr3.className = 'fpv-menu-divider';
+  card.appendChild(hr3);
 
   // Footer buttons
   const footer = document.createElement('div');

@@ -12,6 +12,7 @@ import type { InputProvider, InputState } from '../shared/types.ts';
 import { createKeyboardSource } from './keyboard.ts';
 import { createGamepadSource }  from './gamepad.ts';
 import { createTouchSource }    from './touch.ts';
+import { settings } from '../ui/menu.ts';
 
 /** How long (ms) a non-zero axis reading is considered "fresh". */
 const RECENCY_WINDOW_MS = 250;
@@ -125,9 +126,21 @@ export const input: InputProvider = {
     }
 
     const throttle = pickAxis('throttle', now, kbS.throttle, gpS.throttle, tS.throttle);
-    const yaw      = pickAxis('yaw',      now, kbS.yaw,      gpS.yaw,      tS.yaw);
-    const pitch    = pickAxis('pitch',    now, kbS.pitch,    gpS.pitch,    tS.pitch);
-    const roll     = pickAxis('roll',     now, kbS.roll,     gpS.roll,     tS.roll);
+    let yaw        = pickAxis('yaw',      now, kbS.yaw,      gpS.yaw,      tS.yaw);
+    let pitch      = pickAxis('pitch',    now, kbS.pitch,    gpS.pitch,    tS.pitch);
+    let roll       = pickAxis('roll',     now, kbS.roll,     gpS.roll,     tS.roll);
+
+    // Convention correction: in a Y-up right-handed frame with body +Z = back,
+    // a positive Z-torque rotates the right wing UP (= bank LEFT) and a
+    // positive Y-torque rotates the nose LEFT. The contract reads "+1 = right",
+    // so we negate roll/yaw once here so D / E feel correct by default.
+    roll = -roll;
+    yaw  = -yaw;
+
+    // User-configurable inversion (each toggle flips one axis).
+    if (settings.invertRoll)  roll  = -roll;
+    if (settings.invertPitch) pitch = -pitch;
+    if (settings.invertYaw)   yaw   = -yaw;
 
     const modeToggle = kbS.modeToggle || gpS.modeToggle || tS.modeToggle;
     const reset      = kbS.reset      || gpS.reset      || tS.reset;
