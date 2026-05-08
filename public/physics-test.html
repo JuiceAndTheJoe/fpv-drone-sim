@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Physics Test — FPV Drone Sim</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0f; color: #e0e0e0; font-family: monospace; display: flex; flex-direction: column; height: 100vh; }
+    canvas { flex: 1; display: block; }
+    #hud {
+      position: fixed; top: 12px; left: 12px;
+      background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 6px;
+      font-size: 12px; line-height: 1.8;
+    }
+    #controls {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 10px;
+    }
+    button {
+      padding: 8px 18px; border: 1px solid #555; border-radius: 4px;
+      background: #1a1a2e; color: #e0e0e0; cursor: pointer; font-family: monospace;
+      font-size: 13px;
+    }
+    button:hover { background: #2a2a4e; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div>pos&nbsp;&nbsp;&nbsp;: <span id="pos">–</span></div>
+  <div>vel&nbsp;&nbsp;&nbsp;: <span id="vel">–</span></div>
+  <div>throttle: <span id="thr">–</span></div>
+  <div>rpm&nbsp;&nbsp;&nbsp;: <span id="rpm">–</span></div>
+  <div>mode&nbsp;&nbsp;: <span id="mode">–</span></div>
+</div>
+<div id="controls">
+  <button id="btnHover">Hover</button>
+  <button id="btnBoost">Throttle Up</button>
+  <button id="btnReset">Reset</button>
+  <button id="btnFall">Free Fall</button>
+</div>
+
+<script type="module">
+  // -- Minimal Three.js import (CDN) ----------------------------------------
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
+
+  // -- Physics world import (dev server must be running) --------------------
+  // When served from Vite (npm run dev), absolute /src imports work.
+  const { physicsWorld } = await import('/src/physics/world.ts');
+  const { MASS_KG, GRAVITY, PHYSICS_DT, SPAWN_POSITION } =
+    await import('/src/shared/constants.ts');
+
+  // -- Three.js scene setup -------------------------------------------------
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0f);
+  scene.fog = new THREE.Fog(0x0a0a0f, 20, 80);
+
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+  camera.position.set(3, 3, 5);
+  camera.lookAt(0, 1.5, 0);
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+  });
+
+  // Lights
+  scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+  sun.position.set(5, 10, 8);
+  sun.castShadow = true;
+  scene.add(sun);
+
+  // Ground plane (visual)
+  const groundGeo = new THREE.PlaneGeometry(60, 60);
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a2a1a });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Grid
+  scene.add(new THREE.GridHelper(60, 60, 0x334433, 0x223322));
+
+  // Drone box (visual)
+  const droneGeo = new THREE.BoxGeometry(0.12, 0.04, 0.12);
+  const droneMat = new THREE.MeshStandardMaterial({ color: 0x44aaff });
+  const droneMesh = new THREE.Mesh(droneGeo, droneMat);
+  droneMesh.castShadow = true;
+  scene.add(droneMesh);
+
+  // Velocity arrow helper
+  const arrowDir = new THREE.Vector3(0, 1, 0);
+  const arrowOrigin = new THREE.Vector3(0, 1.5, 0);
+  const arrowHelper = new THREE.ArrowHelper(arrowDir, arrowOrigin, 0.5, 0xff4444);
+  scene.add(arrowHelper);
+
+  // -- Init Rapier ----------------------------------------------------------
+  await physicsWorld.init();
+
+  // -- State ----------------------------------------------------------------
+  let currentMode = 'fall'; // 'fall' | 'hover' | 'boost'
+  const hoverForce = MASS_KG * GRAVITY;
+
+  document.getElementById('btnHover').addEventListener('click', () => { currentMode = 'hover'; });
+  document.getElementById('btnBoost').addEventListener('click', () => { currentMode = 'boost'; });
+  document.getElementById('btnFall').addEventListener('click', () => { currentMode = 'fall'; });
+  document.getElementById('btnReset').addEventListener('click', () => {
+    physicsWorld.resetDrone([...SPAWN_POSITION]);
+    currentMode = 'fall';
+  });
+
+  // -- Fixed-step loop ------------------------------------------------------
+  const MAX_STEPS = 8;
+  let last = performance.now();
+  let accumulator = 0;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+
+    const dtSec = Math.min((now - last) / 1000, 0.25);
+    last = now;
+    accumulator += dtSec;
+
+    let steps = 0;
+    while (accumulator >= PHYSICS_DT && steps < MAX_STEPS) {
+      // Apply forces based on current mode
+      if (currentMode === 'hover') {
+        physicsWorld.applyBodyForce([0, hoverForce, 0]);
+      } else if (currentMode === 'boost') {
+        physicsWorld.applyBodyForce([0, hoverForce * 1.8, 0]);
+      }
+      // 'fall' applies no force — gravity pulls drone down
+
+      physicsWorld.step(PHYSICS_DT);
+      accumulator -= PHYSICS_DT;
+      steps++;
+    }
+
+    // Read state
+    const s = physicsWorld.getDroneState();
+    const [px, py, pz] = s.position;
+    const [qx, qy, qz, qw] = s.quaternion;
+    const [vx, vy, vz] = s.linearVelocity;
+
+    // Update drone mesh
+    droneMesh.position.set(px, py, pz);
+    droneMesh.quaternion.set(qx, qy, qz, qw);
+
+    // Update velocity arrow
+    const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
+    if (speed > 0.01) {
+      arrowHelper.setDirection(new THREE.Vector3(vx/speed, vy/speed, vz/speed));
+      arrowHelper.setLength(Math.min(speed * 0.3, 3));
+    }
+    arrowHelper.position.set(px, py, pz);
+
+    // HUD
+    document.getElementById('pos').textContent =
+      `${px.toFixed(2)}, ${py.toFixed(2)}, ${pz.toFixed(2)}`;
+    document.getElementById('vel').textContent =
+      `${vx.toFixed(2)}, ${vy.toFixed(2)}, ${vz.toFixed(2)}`;
+    document.getElementById('thr').textContent = s.throttle.toFixed(3);
+    document.getElementById('rpm').textContent = s.rpm.toFixed(3);
+    document.getElementById('mode').textContent = currentMode;
+
+    // Smooth camera follow
+    camera.position.lerp(new THREE.Vector3(px + 3, py + 3, pz + 5), 0.05);
+    camera.lookAt(px, py, pz);
+
+    renderer.render(scene, camera);
+  }
+
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
