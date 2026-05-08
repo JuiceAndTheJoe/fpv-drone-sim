@@ -141,10 +141,12 @@ export function createMobileHelpers(): { attach(): void; detach(): void } {
     // 1. Dispatch userGesture so audio can resume AudioContext
     window.dispatchEvent(new Event('userGesture'));
 
-    // 2. Best-effort fullscreen
-    if (document.documentElement.requestFullscreen) {
+    // 2. Best-effort fullscreen — only on touch devices. On desktop, fullscreen
+    //    causes the browser to capture Esc for "exit fullscreen", which in
+    //    practice prevents the settings menu from being opened with Esc.
+    if (isCoarsePointer() && document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch(() => {
-        // swallow — iOS/desktop may deny
+        // swallow — some browsers deny
       });
     }
 

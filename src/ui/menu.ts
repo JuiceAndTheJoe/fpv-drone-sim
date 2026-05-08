@@ -6,7 +6,7 @@
  * Settings are persisted to localStorage under 'fpvSimSettings'.
  */
 
-import { emit } from '../shared/eventBus.ts';
+import { emit, on } from '../shared/eventBus.ts';
 import type { FlightMode } from '../shared/types.ts';
 
 // ---------------------------------------------------------------------------
@@ -184,6 +184,35 @@ function injectStyles(): void {
     .fpv-btn-accent:hover {
       background: rgba(16, 241, 249, 0.32);
     }
+
+    /* Always-visible settings gear — anchored top-right, clear of FPS pill */
+    #fpv-menu-trigger {
+      position: fixed;
+      top: 16px;
+      right: 92px;
+      z-index: 6;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(10, 14, 22, 0.60);
+      color: #10f1f9;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+    #fpv-menu-trigger:hover {
+      background: rgba(16, 241, 249, 0.18);
+      border-color: rgba(16, 241, 249, 0.5);
+      transform: rotate(30deg);
+    }
   `;
   document.head.appendChild(style);
 }
@@ -328,9 +357,10 @@ function buildOverlay(s: SimSettings): HTMLElement {
   card.appendChild(footer);
   overlay.appendChild(card);
 
-  return { overlay, closeBtn } as unknown as HTMLElement & {
+  return { overlay, closeBtn, modeButtons } as unknown as HTMLElement & {
     overlay: HTMLElement;
     closeBtn: HTMLButtonElement;
+    modeButtons: HTMLButtonElement[];
   };
 }
 
@@ -338,12 +368,15 @@ function buildOverlay(s: SimSettings): HTMLElement {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createMenu(): { attach(): void; detach(): void; isOpen(): boolean } {
+export function createMenu(): { attach(): void; detach(): void; isOpen(): boolean; open(): void } {
   injectStyles();
 
   const s = settings;
   let overlay: HTMLElement | null = null;
   let closeBtn: HTMLButtonElement | null = null;
+  let trigger: HTMLButtonElement | null = null;
+  let modeButtons: HTMLButtonElement[] = [];
+  let unsubMode: (() => void) | null = null;
   let _open = false;
 
   function open(): void {
@@ -370,23 +403,46 @@ export function createMenu(): { attach(): void; detach(): void; isOpen(): boolea
     if (e.target === overlay) close();
   }
 
+  function syncModeUi(mode: FlightMode): void {
+    s.mode = mode;
+    saveSettings(s);
+    if (modeButtons.length === 0) return;
+    const modes: FlightMode[] = ['arcade', 'acro'];
+    modeButtons.forEach((b, i) => b.classList.toggle('active', modes[i] === mode));
+  }
+
   return {
     attach(): void {
       if (overlay) return;
 
-      const built = buildOverlay(s);
-      // buildOverlay returns a plain object, not an HTMLElement — cast carefully
-      const { overlay: ov, closeBtn: cb } = built as unknown as {
+      const built = buildOverlay(s) as unknown as {
         overlay: HTMLElement;
         closeBtn: HTMLButtonElement;
+        modeButtons: HTMLButtonElement[];
       };
-      overlay = ov;
-      closeBtn = cb;
+      overlay = built.overlay;
+      closeBtn = built.closeBtn;
+      modeButtons = built.modeButtons;
 
       closeBtn.addEventListener('click', close);
       overlay.addEventListener('click', onOverlayClick);
       document.addEventListener('keydown', onKeyDown);
       document.body.appendChild(overlay);
+
+      // Always-visible settings trigger so users can find the menu without Esc
+      trigger = document.createElement('button');
+      trigger.id = 'fpv-menu-trigger';
+      trigger.title = 'Settings (Esc)';
+      trigger.setAttribute('aria-label', 'Open settings');
+      trigger.textContent = '⚙'; // ⚙ gear glyph
+      trigger.addEventListener('click', () => {
+        _open ? close() : open();
+      });
+      document.body.appendChild(trigger);
+
+      // Keep the mode toggle UI in sync when other parts of the app change mode
+      // (Tab keystroke, gamepad button, onboarding CTA).
+      unsubMode = on('modeChanged', ({ mode }) => syncModeUi(mode));
     },
 
     detach(): void {
@@ -394,6 +450,11 @@ export function createMenu(): { attach(): void; detach(): void; isOpen(): boolea
       document.removeEventListener('keydown', onKeyDown);
       overlay.removeEventListener('click', onOverlayClick);
       overlay.remove();
+      trigger?.remove();
+      trigger = null;
+      unsubMode?.();
+      unsubMode = null;
+      modeButtons = [];
       overlay = null;
       closeBtn = null;
       _open = false;
@@ -402,5 +463,7 @@ export function createMenu(): { attach(): void; detach(): void; isOpen(): boolea
     isOpen(): boolean {
       return _open;
     },
+
+    open,
   };
 }

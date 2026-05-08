@@ -39,8 +39,8 @@ import type {
   Vec3,
 } from '../shared/types.ts';
 import { emit } from '../shared/eventBus.ts';
+import { GRAVITY, MASS_KG } from '../shared/constants.ts';
 import {
-  HOVER_THROTTLE,
   KP_ATTITUDE,
   KP_RATE,
   MAX_BANK_RAD,
@@ -161,13 +161,24 @@ function computeThrust(throttle: number): Vec3 {
 }
 
 /**
- * Arcade altitude-assist throttle mapping.
- * Centre stick (0.5) → roughly hover thrust.
- * Effective range: 0 = min, 1 = max, clamped.
+ * Arcade altitude-assist throttle mapping (piecewise-linear in thrust).
+ *   input 0   → 0 N           (free fall)
+ *   input 0.5 → MASS·GRAVITY  (exact hover, drone holds altitude)
+ *   input 1   → THRUST_MAX_N  (max climb)
+ *
+ * The previous version applied THROTTLE_CURVE to a linear throttle offset, so
+ * 0.5 produced ≈2.8 N instead of the 4.9 N needed to cancel gravity — drone
+ * climbed slowly above center stick and never quite hovered. Piecewise-linear
+ * thrust avoids the curve altogether and gives the user the expected
+ * "hands off → hold altitude" behavior.
  */
+const HOVER_THRUST_N = MASS_KG * GRAVITY;
 function arcadeThrottle(rawThrottle: number): Vec3 {
-  const effective = clamp(HOVER_THROTTLE + (rawThrottle - 0.5) * 1.5, 0, 1);
-  return computeThrust(effective);
+  const t = clamp(rawThrottle, 0, 1);
+  const force = t <= 0.5
+    ? (t / 0.5) * HOVER_THRUST_N
+    : HOVER_THRUST_N + ((t - 0.5) / 0.5) * (THRUST_MAX_N - HOVER_THRUST_N);
+  return [0, force, 0];
 }
 
 // ---------------------------------------------------------------------------
