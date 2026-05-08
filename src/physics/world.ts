@@ -1,9 +1,8 @@
 /**
- * STREAM B — Physics world
- * Owner: Stream B
+ * STREAM B — Physics world (pure-TS, no Rapier/WASM)
  *
- * Wraps Rapier3D in the PhysicsWorld interface so the rest of the engine
- * never imports Rapier directly. init() must be awaited (WASM is async).
+ * Semi-implicit Euler integrator with analytic drag.
+ * All vectors are world-frame unless noted as "body-frame".
  */
 import type { DroneState, PhysicsWorld, Vec3 } from '../shared/types.ts';
 import {
@@ -14,169 +13,148 @@ import {
   GROUND_Y,
   LINEAR_DRAG,
   MASS_KG,
-  PHYSICS_DT,
   QUADRATIC_DRAG,
   SPAWN_POSITION,
 } from '../shared/constants.ts';
 import { emit } from '../shared/eventBus.ts';
-import type { RigidBody, World as RapierWorld } from '@dimforge/rapier3d-compat';
+import { quatRotateVec } from './drone.ts';
 
-// ---------------------------------------------------------------------------
-// Quaternion helpers — inline so we don't add Three.js as a runtime dep.
-// Rotates a body-frame vector into world frame using q * v * q^-1.
-// q is [x, y, z, w], v is [x, y, z].
-// ---------------------------------------------------------------------------
-function quatRotateVec(
-  qx: number, qy: number, qz: number, qw: number,
-  vx: number, vy: number, vz: number,
-): [number, number, number] {
-  // t = 2 * cross(q.xyz, v)
-  const tx = 2 * (qy * vz - qz * vy);
-  const ty = 2 * (qz * vx - qx * vz);
-  const tz = 2 * (qx * vy - qy * vx);
-  // result = v + qw * t + cross(q.xyz, t)
-  return [
-    vx + qw * tx + (qy * tz - qz * ty),
-    vy + qw * ty + (qz * tx - qx * tz),
-    vz + qw * tz + (qx * ty - qy * tx),
-  ];
-}
+// Principal inertia: mass concentrated at 10 cm moment arm on a 5" quad.
+// I = MASS_KG * r²,  r = 0.10 m  →  5e-3 kg·m²
+const I = MASS_KG * 0.10 * 0.10;
+const INV_I = 1 / I;
 
-// ---------------------------------------------------------------------------
-// Internal mutable state (module-level so init() can wire it up once)
-// ---------------------------------------------------------------------------
-let rapierWorld: RapierWorld | null = null;
-let droneBody: RigidBody | null = null;
+// Mutable rigid-body state (module-level; init() seeds these)
+let px = SPAWN_POSITION[0], py = SPAWN_POSITION[1], pz = SPAWN_POSITION[2];
+let vx = 0, vy = 0, vz = 0;
+// Quaternion (x, y, z, w)
+let qx = 0, qy = 0, qz = 0, qw = 1;
+let wx = 0, wy = 0, wz = 0; // angular velocity (world frame, rad/s)
 
-// Last commanded throttle (0..1) — drives the RPM proxy.
+// Accumulated body-frame force and torque — cleared each step.
+let fBx = 0, fBy = 0, fBz = 0;
+let tBx = 0, tBy = 0, tBz = 0;
+
+// Throttle / RPM bookkeeping
 let _throttle = 0;
-// Smoothed RPM proxy (0..1).
 let _rpm = 0;
-// RPM smoothing time-constant (seconds to reach ~63 % of target).
 const RPM_TAU = 0.08;
 
-// ---------------------------------------------------------------------------
-// Public PhysicsWorld implementation
-// ---------------------------------------------------------------------------
 export const physicsWorld: PhysicsWorld = {
-  async init(): Promise<void> {
-    const RAPIER = await import('@dimforge/rapier3d-compat');
-    await RAPIER.init();
-
-    // Build world with -Y gravity
-    rapierWorld = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
-    rapierWorld.timestep = PHYSICS_DT;
-
-    // ---- Static ground plane ----
-    // A large cuboid centred at y = GROUND_Y acts as the floor.
-    const groundDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, GROUND_Y, 0);
-    const groundBody = rapierWorld.createRigidBody(groundDesc);
-    // Half-extents: very thin slab, wide enough to catch any fall.
-    const groundColliderDesc = RAPIER.ColliderDesc.cuboid(500, 0.05, 500);
-    rapierWorld.createCollider(groundColliderDesc, groundBody);
-
-    // ---- Dynamic drone body ----
-    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(...SPAWN_POSITION)
-      .setLinearDamping(LINEAR_DRAG)
-      .setAngularDamping(ANGULAR_DRAG)
-      // setAdditionalMass adds on top of the collider's density-derived mass.
-      // We set density=0 on the collider and provide the total mass here.
-      .setAdditionalMass(MASS_KG);
-
-    droneBody = rapierWorld.createRigidBody(bodyDesc);
-
-    // Attach box collider with zero density (mass fully controlled above).
-    const [hx, hy, hz] = DRONE_HALF_EXTENTS;
-    const droneColliderDesc = RAPIER.ColliderDesc.cuboid(hx, hy, hz).setDensity(0);
-    rapierWorld.createCollider(droneColliderDesc, droneBody);
+  init(): Promise<void> {
+    px = SPAWN_POSITION[0]; py = SPAWN_POSITION[1]; pz = SPAWN_POSITION[2];
+    vx = vy = vz = 0;
+    qx = qy = qz = 0; qw = 1;
+    wx = wy = wz = 0;
+    fBx = fBy = fBz = 0;
+    tBx = tBy = tBz = 0;
+    _throttle = 0; _rpm = 0;
+    return Promise.resolve();
   },
 
-  step(_dt: number): void {
-    if (!rapierWorld || !droneBody) return;
-
-    // Smooth the RPM proxy toward the last commanded throttle.
-    // Discrete first-order low-pass: alpha = dt / (tau + dt)
-    const alpha = PHYSICS_DT / (RPM_TAU + PHYSICS_DT);
+  step(dt: number): void {
+    // RPM low-pass toward commanded throttle
+    const alpha = dt / (RPM_TAU + dt);
     _rpm += alpha * (_throttle - _rpm);
 
-    // Apply quadratic drag in world space each step.
-    // F_drag = -QUADRATIC_DRAG * |v| * v
-    const vel = droneBody.linvel();
-    const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    // Rotate body-frame force/torque into world frame
+    const [fWx, fWy, fWz] = quatRotateVec(qx, qy, qz, qw, fBx, fBy, fBz);
+    const [tWx, tWy, tWz] = quatRotateVec(qx, qy, qz, qw, tBx, tBy, tBz);
+
+    // Clear buffers (mirrors Rapier's per-step accumulator model)
+    fBx = fBy = fBz = 0;
+    tBx = tBy = tBz = 0;
+
+    // Aggregate forces (world frame)
+    const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    let Fx = fWx;
+    let Fy = fWy - GRAVITY * MASS_KG;
+    let Fz = fWz;
+    Fx -= LINEAR_DRAG * vx;
+    Fy -= LINEAR_DRAG * vy;
+    Fz -= LINEAR_DRAG * vz;
     if (speed > 0) {
-      const k = -QUADRATIC_DRAG * speed;
-      droneBody.addForce({ x: k * vel.x, y: k * vel.y, z: k * vel.z }, true);
+      Fx -= QUADRATIC_DRAG * speed * vx;
+      Fy -= QUADRATIC_DRAG * speed * vy;
+      Fz -= QUADRATIC_DRAG * speed * vz;
     }
 
-    // Advance the simulation by one fixed step.
-    rapierWorld.step();
+    // Aggregate torques (world frame)
+    const Tx = tWx - ANGULAR_DRAG * wx;
+    const Ty = tWy - ANGULAR_DRAG * wy;
+    const Tz = tWz - ANGULAR_DRAG * wz;
 
-    // Auto-reset if the drone falls through the floor.
-    const pos = droneBody.translation();
-    if (pos.y < FALL_RESET_Y) {
+    // Semi-implicit Euler: velocities first, then positions
+    const invM = 1 / MASS_KG;
+    vx += Fx * invM * dt;
+    vy += Fy * invM * dt;
+    vz += Fz * invM * dt;
+
+    px += vx * dt;
+    py += vy * dt;
+    pz += vz * dt;
+
+    wx += Tx * INV_I * dt;
+    wy += Ty * INV_I * dt;
+    wz += Tz * INV_I * dt;
+
+    // Quaternion integration: q += 0.5 * Ω ⊗ q * dt with Ω = (wx, wy, wz, 0)
+    const dqx = 0.5 * dt * ( wx * qw + wy * qz - wz * qy);
+    const dqy = 0.5 * dt * (-wx * qz + wy * qw + wz * qx);
+    const dqz = 0.5 * dt * ( wx * qy - wy * qx + wz * qw);
+    const dqw = 0.5 * dt * (-wx * qx - wy * qy - wz * qz);
+    qx += dqx; qy += dqy; qz += dqz; qw += dqw;
+    const qlen = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (qlen > 0) { qx /= qlen; qy /= qlen; qz /= qlen; qw /= qlen; }
+
+    // Ground collision — bottom of the body sits at p.y - hy
+    const groundLimit = GROUND_Y + DRONE_HALF_EXTENTS[1];
+    if (py < groundLimit) {
+      py = groundLimit;
+      if (vy < 0) vy = 0;
+    }
+
+    // Fall-through auto-reset (defensive — ground clamp should make this unreachable)
+    if (py < FALL_RESET_Y) {
       physicsWorld.resetDrone([...SPAWN_POSITION] as Vec3);
       emit('reset', undefined);
     }
   },
 
   getDroneState(): DroneState {
-    if (!droneBody) {
-      return {
-        position: [...SPAWN_POSITION] as Vec3,
-        quaternion: [0, 0, 0, 1],
-        linearVelocity: [0, 0, 0],
-        angularVelocity: [0, 0, 0],
-        throttle: _throttle,
-        rpm: _rpm,
-      };
-    }
-
-    const pos = droneBody.translation();
-    const rot = droneBody.rotation();
-    const lv = droneBody.linvel();
-    const av = droneBody.angvel();
-
     return {
-      position: [pos.x, pos.y, pos.z],
-      quaternion: [rot.x, rot.y, rot.z, rot.w],
-      linearVelocity: [lv.x, lv.y, lv.z],
-      angularVelocity: [av.x, av.y, av.z],
+      position: [px, py, pz],
+      quaternion: [qx, qy, qz, qw],
+      linearVelocity: [vx, vy, vz],
+      angularVelocity: [wx, wy, wz],
       throttle: _throttle,
       rpm: _rpm,
     };
   },
 
   applyBodyForce(force: Vec3): void {
-    if (!droneBody) return;
-
-    // Infer throttle from the Y component of the body-frame force.
-    // hover force = MASS_KG * GRAVITY; normalise into 0..1.
+    // Infer throttle from body-Y thrust vs. twice the hover force.
     const hoverForce = MASS_KG * GRAVITY;
     _throttle = Math.max(0, Math.min(1, force[1] / (hoverForce * 2)));
 
-    // Transform body-frame force to world frame via current orientation.
-    const rot = droneBody.rotation();
-    const [wx, wy, wz] = quatRotateVec(rot.x, rot.y, rot.z, rot.w, force[0], force[1], force[2]);
-    droneBody.addForce({ x: wx, y: wy, z: wz }, true);
+    fBx += force[0];
+    fBy += force[1];
+    fBz += force[2];
   },
 
   applyBodyTorque(torque: Vec3): void {
-    if (!droneBody) return;
-
-    // Transform body-frame torque to world frame.
-    const rot = droneBody.rotation();
-    const [wx, wy, wz] = quatRotateVec(rot.x, rot.y, rot.z, rot.w, torque[0], torque[1], torque[2]);
-    droneBody.addTorque({ x: wx, y: wy, z: wz }, true);
+    tBx += torque[0];
+    tBy += torque[1];
+    tBz += torque[2];
   },
 
   resetDrone(position: Vec3): void {
-    if (!droneBody) return;
-
-    droneBody.setTranslation({ x: position[0], y: position[1], z: position[2] }, true);
-    droneBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
-    droneBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    droneBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    px = position[0]; py = position[1]; pz = position[2];
+    vx = vy = vz = 0;
+    qx = qy = qz = 0; qw = 1;
+    wx = wy = wz = 0;
+    fBx = fBy = fBz = 0;
+    tBx = tBy = tBz = 0;
     _throttle = 0;
     _rpm = 0;
   },

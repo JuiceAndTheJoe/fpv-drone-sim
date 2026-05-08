@@ -15,11 +15,19 @@ export const RATE_MAX_RAD_S = 14;
 /** Stick expo curve exponent. 1 = linear, higher = softer center. */
 export const STICK_EXPO = 2.5;
 
-/** Acro rate-loop gain (N·m per rad/s of rate error). */
-export const KP_RATE = 0.04;
+/**
+ * Acro rate-loop gain (N·m per rad/s of rate error).
+ * Sized against the body's principal inertia (~5e-3 kg·m²) so the closed-loop
+ * time constant tau = I/KP is ≈ 25 ms — snappy but stable at 120 Hz.
+ */
+export const KP_RATE = 0.2;
 
-/** Arcade attitude-loop gain (rad/s per rad of attitude error). */
-export const KP_ATTITUDE = 6;
+/**
+ * Arcade attitude-loop gain (rad/s per rad of attitude error).
+ * Outer-loop tau = 1/KP_ATTITUDE = 100 ms — 4x the inner rate-loop tau,
+ * which keeps the cascade well-separated and stable.
+ */
+export const KP_ATTITUDE = 10;
 
 /** Arcade max bank angle (rad). */
 export const MAX_BANK_RAD = Math.PI / 3;

@@ -41,7 +41,7 @@ async function boot(): Promise<void> {
   const track = createTrack();
   render.scene.add(track.group);
 
-  setStatus('Initializing physics (Rapier WASM)...');
+  setStatus('Initializing physics...');
   await physicsWorld.init();
 
   setStatus('Attaching input + UI...');
