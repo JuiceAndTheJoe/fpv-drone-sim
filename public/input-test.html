@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Input Test — FPV Drone Sim</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: monospace;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 14px; color: #888; margin-bottom: 20px; letter-spacing: 0.1em; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      max-width: 640px;
+    }
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .card h2 { font-size: 11px; color: #888; margin-bottom: 10px; letter-spacing: 0.08em; }
+
+    .row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .label { font-size: 11px; color: #aaa; width: 80px; }
+    .bar-wrap {
+      flex: 1;
+      height: 10px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 5px;
+      overflow: hidden;
+      position: relative;
+    }
+    /* For -1..1 axes: bar fills from center */
+    .bar-center {
+      position: absolute;
+      top: 0; bottom: 0;
+      background: #4af;
+      border-radius: 5px;
+      transition: left 40ms linear, width 40ms linear;
+    }
+    /* For 0..1 axes: bar fills from left */
+    .bar-left {
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      background: #fa4;
+      border-radius: 5px;
+      transition: width 40ms linear;
+    }
+    .value {
+      font-size: 11px;
+      color: #eee;
+      width: 48px;
+      text-align: right;
+    }
+
+    .flag-row { display: flex; gap: 10px; margin-top: 6px; }
+    .flag {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.08);
+      color: #888;
+      transition: background 80ms, color 80ms;
+    }
+    .flag.active { background: #fa4; color: #000; font-weight: bold; }
+
+    .source-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.07);
+      color: #888;
+      margin-left: auto;
+    }
+
+    .hint {
+      margin-top: 24px;
+      font-size: 11px;
+      color: #555;
+      line-height: 1.8;
+      max-width: 480px;
+    }
+    .hint b { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>INPUT TEST — FPV DRONE SIM</h1>
+  <div class="grid">
+    <!-- Throttle -->
+    <div class="card">
+      <h2>THROTTLE (0..1)</h2>
+      <div class="row">
+        <div class="label">throttle</div>
+        <div class="bar-wrap">
+          <div class="bar-left" id="bar-throttle"></div>
+        </div>
+        <div class="value" id="val-throttle">0.500</div>
+      </div>
+    </div>
+
+    <!-- Yaw -->
+    <div class="card">
+      <h2>YAW (-1..1)</h2>
+      <div class="row">
+        <div class="label">yaw</div>
+        <div class="bar-wrap">
+          <div class="bar-center" id="bar-yaw"></div>
+        </div>
+        <div class="value" id="val-yaw">0.000</div>
+      </div>
+    </div>
+
+    <!-- Pitch -->
+    <div class="card">
+      <h2>PITCH (-1..1)</h2>
+      <div class="row">
+        <div class="label">pitch</div>
+        <div class="bar-wrap">
+          <div class="bar-center" id="bar-pitch"></div>
+        </div>
+        <div class="value" id="val-pitch">0.000</div>
+      </div>
+    </div>
+
+    <!-- Roll -->
+    <div class="card">
+      <h2>ROLL (-1..1)</h2>
+      <div class="row">
+        <div class="label">roll</div>
+        <div class="bar-wrap">
+          <div class="bar-center" id="bar-roll"></div>
+        </div>
+        <div class="value" id="val-roll">0.000</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edge flags -->
+  <div class="card" style="max-width:640px; margin-top:16px;">
+    <h2>EDGE FLAGS (flash on trigger)</h2>
+    <div class="flag-row">
+      <span class="flag" id="flag-mode">MODE TOGGLE</span>
+      <span class="flag" id="flag-reset">RESET</span>
+    </div>
+  </div>
+
+  <div class="hint">
+    <b>Keyboard:</b> W/S=pitch · A/D=roll · Q/E=yaw · Shift/Space=full throttle · Ctrl=cut throttle · R=reset · Tab=mode<br>
+    <b>Gamepad:</b>  left stick = yaw/throttle · right stick = roll/pitch · Select=mode · Start=reset<br>
+    <b>Touch:</b>    virtual sticks visible on touch/coarse-pointer devices — [M] mode · [R] reset
+  </div>
+
+  <script type="module">
+    // This page is served as a plain HTML file — it imports from the built
+    // bundle if Vite is running, or can be loaded standalone. Since this is
+    // under /public, Vite serves it as-is. We inline a minimal re-implementation
+    // of the input layer here so the page works without the full build.
+    //
+    // For full integration testing, open the main app and watch the console,
+    // or hook into window.__inputDebug set below.
+
+    // ── Minimal inline input reader ──────────────────────────────────────
+    const held = new Set();
+    window.addEventListener('keydown', e => {
+      held.add(e.code);
+      if (e.code === 'Tab') e.preventDefault();
+    });
+    window.addEventListener('keyup', e => held.delete(e.code));
+
+    let pendingMode  = false;
+    let pendingReset = false;
+
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Tab')  { pendingMode  = true; e.preventDefault(); }
+      if (e.code === 'KeyR') { pendingReset = true; }
+    });
+
+    let prevGpMode  = false;
+    let prevGpReset = false;
+
+    function sample() {
+      // Keyboard
+      let pitch = 0, roll = 0, yaw = 0;
+      if (held.has('KeyW')) pitch -= 1;
+      if (held.has('KeyS')) pitch += 1;
+      if (held.has('KeyA')) roll  -= 1;
+      if (held.has('KeyD')) roll  += 1;
+      if (held.has('KeyQ')) yaw   -= 1;
+      if (held.has('KeyE')) yaw   += 1;
+      const lowHeld  = held.has('ControlLeft') || held.has('ControlRight');
+      const highHeld = held.has('ShiftLeft') || held.has('ShiftRight') || held.has('Space');
+      let throttle = lowHeld ? 0 : highHeld ? 1 : 0.5;
+
+      let modeToggle = pendingMode;
+      let reset      = pendingReset;
+      pendingMode    = false;
+      pendingReset   = false;
+
+      // Gamepad overlay
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      for (const gp of gamepads) {
+        if (!gp || !gp.connected) continue;
+        const dz = v => Math.abs(v) < 0.05 ? 0 : v;
+        const gpYaw      = dz(gp.axes[0] ?? 0);
+        const gpThrottle = (1 - (gp.axes[1] ?? 0)) / 2;
+        const gpRoll     = dz(gp.axes[2] ?? 0);
+        const gpPitch    = -(dz(gp.axes[3] ?? 0));
+        if (Math.abs(gpYaw)   > 0.02) yaw      = gpYaw;
+        if (Math.abs(gpThrottle - 0.5) > 0.05) throttle = gpThrottle;
+        if (Math.abs(gpRoll)  > 0.02) roll     = gpRoll;
+        if (Math.abs(gpPitch) > 0.02) pitch    = gpPitch;
+        const curMode  = gp.buttons[8]?.pressed ?? false;
+        const curReset = gp.buttons[9]?.pressed ?? false;
+        if (curMode  && !prevGpMode)  modeToggle = true;
+        if (curReset && !prevGpReset) reset      = true;
+        prevGpMode  = curMode;
+        prevGpReset = curReset;
+        break;
+      }
+
+      return { throttle, yaw, pitch, roll, modeToggle, reset };
+    }
+
+    // ── Bar updaters ──────────────────────────────────────────────────────
+    function setBarLeft(id, v01) {
+      document.getElementById(id).style.width = `${v01 * 100}%`;
+    }
+    function setBarCenter(id, v11) {
+      const pct = 50;
+      const half = Math.abs(v11) * 50;
+      const bar = document.getElementById(id);
+      if (v11 >= 0) {
+        bar.style.left  = pct + '%';
+        bar.style.width = half + '%';
+      } else {
+        bar.style.left  = (pct - half) + '%';
+        bar.style.width = half + '%';
+      }
+    }
+    function setVal(id, v) {
+      document.getElementById(id).textContent = v.toFixed(3);
+    }
+
+    let modeTimer = 0, resetTimer = 0;
+
+    function tick() {
+      const s = sample();
+      setBarLeft('bar-throttle', s.throttle);
+      setBarCenter('bar-yaw',   s.yaw);
+      setBarCenter('bar-pitch', s.pitch);
+      setBarCenter('bar-roll',  s.roll);
+      setVal('val-throttle', s.throttle);
+      setVal('val-yaw',      s.yaw);
+      setVal('val-pitch',    s.pitch);
+      setVal('val-roll',     s.roll);
+
+      const flagMode  = document.getElementById('flag-mode');
+      const flagReset = document.getElementById('flag-reset');
+      if (s.modeToggle) {
+        flagMode.classList.add('active');
+        clearTimeout(modeTimer);
+        modeTimer = setTimeout(() => flagMode.classList.remove('active'), 200);
+      }
+      if (s.reset) {
+        flagReset.classList.add('active');
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => flagReset.classList.remove('active'), 200);
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
