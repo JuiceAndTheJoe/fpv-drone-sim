@@ -232,12 +232,14 @@ function buildBuildingShell(
     metalness: 0.1,
   });
 
+  // Each wall: [halfX, halfY (height), halfZ, localX, localY, localZ].
+  // Front/back walls span the full width and height with thin Z (depth=0.2).
+  // Side walls span the full depth and height with thin X (width=0.2).
   const wallDefs: Array<[number, number, number, number, number, number]> = [
-    // [halfW, halfH, halfD, localX, localY, localZ]
-    [width / 2, 0.1, height / 2,  0,         height / 2,  depth / 2],   // front wall
-    [width / 2, 0.1, height / 2,  0,         height / 2, -depth / 2],   // back wall
-    [0.1, depth / 2, height / 2,  width / 2, height / 2,  0],            // right wall
-    [0.1, depth / 2, height / 2, -width / 2, height / 2,  0],            // left wall
+    [width / 2, height / 2, 0.1,  0,         height / 2,  depth / 2],   // front wall
+    [width / 2, height / 2, 0.1,  0,         height / 2, -depth / 2],   // back wall
+    [0.1, height / 2, depth / 2,  width / 2, height / 2,  0],            // right wall
+    [0.1, height / 2, depth / 2, -width / 2, height / 2,  0],            // left wall
   ];
 
   const shell = new THREE.Group();
@@ -245,8 +247,8 @@ function buildBuildingShell(
   shell.position.set(x, 0, z);
 
   for (let i = 0; i < wallDefs.length; i++) {
-    const [gw, gd, gh, lx, ly, lz] = wallDefs[i];
-    const geo = new THREE.BoxGeometry(gw * 2, gd * 2, gh * 2);
+    const [hx, hy, hz, lx, ly, lz] = wallDefs[i];
+    const geo = new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2);
     const wall = new THREE.Mesh(geo, mat);
     wall.position.set(lx, ly, lz);
     wall.castShadow = true;

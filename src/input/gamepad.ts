@@ -13,8 +13,8 @@
  *   axes[2]  right stick X  → roll  (-1 = left, +1 = right)
  *   axes[3]  right stick Y  → pitch
  *             Browser: -1 = stick up (push forward), +1 = stick down.
- *             Pilot push-forward = nose down = pitch -1, so invert.
- *             Formula: pitch = -axes[3]
+ *             Pilot push-forward = nose down = pitch -1.
+ *             Formula: pitch = axes[3]   (no inversion needed)
  *
  * Button mapping:
  *   buttons[8]  (Select / Back) → modeToggle (rising edge)
@@ -69,7 +69,7 @@ export function createGamepadSource(): InputSource {
     const yaw      = rawYaw;
     const throttle = (1 - rawThrottle) / 2;   // see header comment
     const roll     = rawRoll;
-    const pitch    = -(applyDeadzone(rawPitch)); // push forward → -1 → nose down
+    const pitch    = applyDeadzone(rawPitch); // push forward (axes[3]=-1) → pitch -1 → nose down
 
     // ── Edge-triggered buttons ────────────────────────────────────────────
     const curModeToggle = buttons[8]?.pressed ?? false;

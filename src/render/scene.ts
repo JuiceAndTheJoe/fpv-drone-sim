@@ -46,6 +46,9 @@ export function createRenderer(canvas: HTMLCanvasElement): RenderHandle {
   const isMobile = matchMedia('(pointer: coarse)').matches;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
   // Shadow maps disabled for perf (Stream E spec)
 
   // ── Scene + background ─────────────────────────────────────────────────────
@@ -62,7 +65,8 @@ export function createRenderer(canvas: HTMLCanvasElement): RenderHandle {
   scene.add(sun);
 
   // ── Camera ─────────────────────────────────────────────────────────────────
-  const camera = new THREE.PerspectiveCamera(110, window.innerWidth / window.innerHeight, 0.05, 2000);
+  // Vertical FOV — at 16:9 this is ~115° horizontal, in FPV-goggle territory.
+  const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.05, 2000);
 
   // ── Drone group ────────────────────────────────────────────────────────────
   const { group: droneGroup, setRpm } = createDronePlaceholder();
@@ -183,6 +187,7 @@ export function createRenderer(canvas: HTMLCanvasElement): RenderHandle {
 
   // ── resize ─────────────────────────────────────────────────────────────────
   function resize(width: number, height: number): void {
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();

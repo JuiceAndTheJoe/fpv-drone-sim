@@ -47,6 +47,7 @@ export function createKeyboardSource(): InputSource {
   const held = new Set<string>();
   let pendingReset      = false;
   let pendingModeToggle = false;
+  let attached          = false;
 
   function onKeyDown(e: KeyboardEvent): void {
     held.add(e.code);
@@ -56,6 +57,10 @@ export function createKeyboardSource(): InputSource {
     }
     if (e.code === KEY_MODE_TOGGLE) {
       pendingModeToggle = true;
+      e.preventDefault();
+    }
+    // Space scrolls the page by default — suppress while it doubles as throttle.
+    if (e.code === 'Space') {
       e.preventDefault();
     }
   }
@@ -108,11 +113,15 @@ export function createKeyboardSource(): InputSource {
   }
 
   function attach(): void {
+    if (attached) return;
+    attached = true;
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup',   onKeyUp);
   }
 
   function detach(): void {
+    if (!attached) return;
+    attached = false;
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup',   onKeyUp);
     held.clear();

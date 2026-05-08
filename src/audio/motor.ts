@@ -39,10 +39,14 @@ export function createMotorAudio(): {
   let currentRpm = 0;
   let volumeScale = 1.0; // 0..1, set by setVolume
   let running = false;
+  let attached = false;
+  let paused = false;
 
   // Unsubscribe handles
   let unsubGateCleared: (() => void) | null = null;
   let unsubRpmUpdated: (() => void) | null = null;
+  let unsubPaused: (() => void) | null = null;
+  let unsubResumed: (() => void) | null = null;
 
   // ---------------------------------------------------------------------------
   // AudioContext lifecycle
@@ -110,7 +114,8 @@ export function createMotorAudio(): {
 
     carrier.frequency.setTargetAtTime(80 + rpm * 320, t, smooth);
     filter.frequency.setTargetAtTime(200 + rpm * 4000, t, smooth);
-    masterGain.gain.setTargetAtTime(rpm * 0.3 * volumeScale, t, smooth);
+    const targetGain = paused ? 0 : rpm * 0.3 * volumeScale;
+    masterGain.gain.setTargetAtTime(targetGain, t, smooth);
   }
 
   // ---------------------------------------------------------------------------
@@ -155,6 +160,9 @@ export function createMotorAudio(): {
 
   return {
     attach(): void {
+      if (attached) return;
+      attached = true;
+
       // Build the audio chain lazily (AudioContext still suspended until gesture)
       buildChain();
 
@@ -170,14 +178,31 @@ export function createMotorAudio(): {
         currentRpm = Math.max(0, Math.min(1, rpm));
         applyRpm(currentRpm);
       });
+
+      // Duck the master gain to silence while paused; restore on resume.
+      unsubPaused = on('paused', () => {
+        paused = true;
+        applyRpm(currentRpm);
+      });
+      unsubResumed = on('resumed', () => {
+        paused = false;
+        applyRpm(currentRpm);
+      });
     },
 
     detach(): void {
+      if (!attached) return;
+      attached = false;
+
       window.removeEventListener('userGesture', onUserGesture);
       unsubGateCleared?.();
       unsubRpmUpdated?.();
+      unsubPaused?.();
+      unsubResumed?.();
       unsubGateCleared = null;
       unsubRpmUpdated = null;
+      unsubPaused = null;
+      unsubResumed = null;
 
       // Stop oscillators
       try { carrier?.stop(); } catch { /* already stopped */ }

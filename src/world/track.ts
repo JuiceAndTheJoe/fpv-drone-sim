@@ -259,44 +259,50 @@ export function createTrack(): TrackHandle {
     const withinRadius = lateralDist < CLEAR_XY_RADIUS;
     const withinThickness = Math.abs(signedDist) < GATE_THICKNESS_M;
 
-    // Detect crossing: sign flipped from last frame (or we start within range)
+    // Detect crossing: sign flipped from last frame.
+    // We require a real crossing — never fire on the first frame after a gate
+    // advance (that would let the next gate insta-trigger if the drone is
+    // already within its threshold zone).
     const justCrossed = lastSignedDist !== null
-      ? (lastSignedDist < 0 && signedDist >= 0) || (lastSignedDist >= 0 && signedDist < 0)
-      : false;
+      && ((lastSignedDist < 0 && signedDist >= 0) || (lastSignedDist >= 0 && signedDist < 0));
 
-    if (withinRadius && withinThickness && (justCrossed || lastSignedDist === null)) {
-      // Set lapStart on the first gate of a new lap
-      if (lapStart === null) {
+    if (withinRadius && withinThickness && justCrossed) {
+      // Start the lap timer ON gate 0 — its lapTimeMs is meaningless (≈0) and
+      // we suppress emitting it. Subsequent gates report split times relative
+      // to gate 0.
+      const isFirstGate = currentGateIndex === 0;
+      if (isFirstGate) {
         lapStart = performance.now();
       }
 
-      const lapTimeMs = performance.now() - lapStart;
+      const lapTimeMs = lapStart !== null ? performance.now() - lapStart : 0;
 
       emit('gateCleared', { gateIndex: currentGateIndex, lapTimeMs });
 
       currentGateIndex++;
 
       if (currentGateIndex >= GATE_DEFS.length) {
-        // Lap complete
-        emit('lapComplete', { lapTimeMs, lapNumber });
+        // Lap complete — increment first so the emitted lapNumber is 1-indexed.
         lapNumber++;
+        emit('lapComplete', { lapTimeMs, lapNumber });
         currentGateIndex = 0;
         // Start new lap timer immediately from now (continuous racing)
         lapStart = performance.now();
       }
 
       recolorGates(gateMeshes, currentGateIndex);
-      lastSignedDist = null; // reset crossing tracker for next gate
+
+      // Seed lastSignedDist with the new gate's signed distance so the next
+      // crossing detection has a valid baseline (rather than null, which would
+      // disable crossing detection until the *next* frame).
+      const newCentre = gateCentres[currentGateIndex];
+      const newNormal = gateNormals[currentGateIndex];
+      _tmpDiff.subVectors(_tmpDrone, newCentre);
+      lastSignedDist = _tmpDiff.dot(newNormal);
       return;
     }
 
-    // Prevent instant re-trigger if drone lingers in threshold zone
-    if (withinRadius && withinThickness) {
-      // Already in zone but didn't just cross — update dist but don't retrigger
-      lastSignedDist = signedDist;
-    } else {
-      lastSignedDist = signedDist;
-    }
+    lastSignedDist = signedDist;
 
     // Subtle pulse animation on the next gate to draw attention
     if (withinRadius) {
