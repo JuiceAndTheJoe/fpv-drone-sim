@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>World Test — FPV Drone Sim (Stream F)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: monospace; color: #0ff; }
+    canvas { display: block; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      background: rgba(0,0,0,0.72); border: 1px solid #0ff4; border-radius: 6px;
+      padding: 12px 16px; line-height: 1.7; min-width: 280px;
+    }
+    #ui h2 { font-size: 13px; color: #0ff; margin-bottom: 6px; }
+    #ui label { font-size: 11px; color: #aaa; }
+    #ui input[type=range] { width: 180px; vertical-align: middle; }
+    #events {
+      position: fixed; bottom: 12px; left: 12px; z-index: 10;
+      background: rgba(0,0,0,0.72); border: 1px solid #0f04; border-radius: 6px;
+      padding: 8px 12px; font-size: 11px; color: #0f8; max-height: 180px;
+      overflow-y: auto; min-width: 320px;
+    }
+    #events h3 { color: #0f8; margin-bottom: 4px; font-size: 11px; }
+    #info { position: fixed; bottom: 12px; right: 12px; z-index: 10;
+      background: rgba(0,0,0,0.72); border: 1px solid #ff08; border-radius: 6px;
+      padding: 8px 12px; font-size: 11px; color: #ffa; min-width: 220px; }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <h2>Stream F — World + Track Test</h2>
+  <div>
+    <label>Gate index: <span id="gateLabel">0</span></label><br>
+    <input type="range" id="gateSlider" min="0" max="9" step="1" value="0">
+  </div>
+  <div style="margin-top:6px">
+    <label>Progress through gate (z-axis): <span id="progressLabel">-1.0</span></label><br>
+    <input type="range" id="progressSlider" min="-1" max="1" step="0.01" value="-1">
+  </div>
+  <div style="margin-top:6px; font-size:11px; color:#aaa;">
+    Drone (red sphere) teleports to selected gate.<br>
+    Drag progress slider past 0 to trigger gateCleared.<br>
+    Orbit: left-drag · Zoom: scroll · Pan: right-drag
+  </div>
+</div>
+<div id="events"><h3>Event log</h3></div>
+<div id="info">Drone pos: —</div>
+
+<script type="module">
+  import * as THREE from '/node_modules/three/build/three.module.js';
+  import { OrbitControls } from '/node_modules/three/examples/jsm/controls/OrbitControls.js';
+
+  // ── Inline minimal event bus (mirrors src/shared/eventBus.ts) ──────────────
+  const _listeners = new Map();
+  function on(event, fn) {
+    let set = _listeners.get(event);
+    if (!set) { set = new Set(); _listeners.set(event, set); }
+    set.add(fn);
+    return () => set.delete(fn);
+  }
+  function emit(event, payload) {
+    const set = _listeners.get(event);
+    if (!set) return;
+    for (const fn of set) fn(payload);
+  }
+  // Expose on window so the module code can import them below via the same mechanism
+  window.__busOn = on; window.__busEmit = emit;
+
+  // ── Inline track constants (mirrors track.ts values) ──────────────────────
+  const GATE_RADIUS = 1.5;
+  const GATE_TUBE = 0.1;
+  const CLEAR_XY_RADIUS = 1.4;
+  const GATE_THICKNESS_M = 0.35;
+
+  const COLOR_NEXT   = 0x00ffff;
+  const COLOR_CLEARED = 0x224444;
+  const COLOR_FUTURE  = 0xffa500;
+  const EMISSIVE_NEXT    = 1.2;
+  const EMISSIVE_CLEARED = 0.15;
+  const EMISSIVE_FUTURE  = 0.5;
+
+  const GATE_DEFS = [
+    { position: [0, 2, -10],      rotationY: 0 },
+    { position: [15, 1.5, -25],   rotationY: Math.PI * 0.15 },
+    { position: [30, 3, -20],     rotationY: Math.PI * 0.45 },
+    { position: [38, 5, -5],      rotationY: Math.PI * 0.5 },
+    { position: [30, 6, 10],      rotationY: Math.PI * 0.55 },
+    { position: [15, 4, 20],      rotationY: Math.PI * 0.85 },
+    { position: [-5, 1.5, 15],    rotationY: Math.PI },
+    { position: [-30, 4, 5],      rotationY: Math.PI * 1.45 },
+    { position: [-28, 5.5, -15],  rotationY: Math.PI * 1.7 },
+    { position: [-12, 2, -30],    rotationY: Math.PI * 1.9 },
+  ];
+
+  // ── Three.js setup ─────────────────────────────────────────────────────────
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = false;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x8aaabf, 0.004);
+
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+  camera.position.set(20, 15, 30);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  // ── Lights ─────────────────────────────────────────────────────────────────
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
+  sun.position.set(60, 80, 40);
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(0x87ceeb, 0x7a6038, 0.6));
+
+  // ── Procedural skybox ──────────────────────────────────────────────────────
+  {
+    const geo = new THREE.SphereGeometry(900, 32, 16);
+    const posAttr = geo.attributes.position;
+    const cols = [];
+    const horizon = new THREE.Color(0xffd090);
+    const zenith  = new THREE.Color(0x1a3a6e);
+    const nadir   = new THREE.Color(0x6e4a1a);
+    for (let i = 0; i < posAttr.count; i++) {
+      const t = posAttr.getY(i) / 900;
+      const c = new THREE.Color();
+      if (t >= 0) c.lerpColors(horizon, zenith, Math.sqrt(t));
+      else        c.lerpColors(horizon, nadir,  Math.sqrt(-t));
+      cols.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false })));
+  }
+
+  // ── Ground ─────────────────────────────────────────────────────────────────
+  {
+    const SIZE = 512, CELLS = 500;
+    const canvas = document.createElement('canvas');
+    canvas.width = SIZE; canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#5c4a2a'; ctx.fillRect(0, 0, SIZE, SIZE);
+    ctx.fillStyle = 'rgba(80,65,35,0.4)';
+    ctx.fillRect(0, 0, SIZE/2, SIZE/2); ctx.fillRect(SIZE/2, SIZE/2, SIZE/2, SIZE/2);
+    ctx.strokeStyle = 'rgba(180,155,90,0.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(SIZE,0); ctx.moveTo(0,0); ctx.lineTo(0,SIZE); ctx.stroke();
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(CELLS, CELLS);
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(500, 500),
+      new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, color: 0x7a6038 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+  }
+
+  // ── Gates ──────────────────────────────────────────────────────────────────
+  const gateGeo = new THREE.TorusGeometry(GATE_RADIUS, GATE_TUBE, 24, 8);
+  const gateMeshes = [];
+  const gateCentres = [];
+  const gateNormals = [];
+
+  function gateMat(color, intensity) {
+    return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: intensity, roughness: 0.4, metalness: 0.7 });
+  }
+
+  GATE_DEFS.forEach((def, i) => {
+    const color = i === 0 ? COLOR_NEXT : COLOR_FUTURE;
+    const intensity = i === 0 ? EMISSIVE_NEXT : EMISSIVE_FUTURE;
+    const mesh = new THREE.Mesh(gateGeo, gateMat(color, intensity));
+    mesh.position.set(...def.position);
+    mesh.rotation.y = def.rotationY;
+    scene.add(mesh);
+    gateMeshes.push(mesh);
+    gateCentres.push(new THREE.Vector3(...def.position));
+    gateNormals.push(new THREE.Vector3(Math.sin(def.rotationY), 0, Math.cos(def.rotationY)).normalize());
+  });
+
+  // Number labels
+  GATE_DEFS.forEach((def, i) => {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffffff }));
+    sprite.position.set(def.position[0], def.position[1] + 2.2, def.position[2]);
+    sprite.scale.set(0.6, 0.6, 1);
+    scene.add(sprite);
+  });
+
+  // ── Obstacles (minimal inline versions for the test page) ─────────────────
+  function rng(seed) {
+    let s = seed | 0;
+    return function() {
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rand = rng(42);
+
+  // Cones
+  const coneGeo = new THREE.ConeGeometry(0.25, 0.75, 8);
+  const coneMat = new THREE.MeshStandardMaterial({ color: 0xff4400 });
+  const cones = new THREE.InstancedMesh(coneGeo, coneMat, 14);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 14; i++) {
+    let x, z;
+    do { x = (rand()-0.5)*120; z = (rand()-0.5)*120; } while (Math.sqrt(x*x+z*z)<5);
+    dummy.position.set(x, 0.375, z); dummy.rotation.y = rand()*Math.PI*2;
+    dummy.scale.setScalar(0.8+rand()*0.6); dummy.updateMatrix();
+    cones.setMatrixAt(i, dummy.matrix);
+  }
+  cones.instanceMatrix.needsUpdate = true;
+  scene.add(cones);
+
+  // ── Drone proxy (red sphere) ───────────────────────────────────────────────
+  const droneGeo = new THREE.SphereGeometry(0.15, 12, 8);
+  const droneMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff2200, emissiveIntensity: 0.8 });
+  const droneMesh = new THREE.Mesh(droneGeo, droneMat);
+  scene.add(droneMesh);
+
+  // ── Lap state (mirrors track.ts logic) ────────────────────────────────────
+  let currentGateIndex = 0;
+  let lapStart = null;
+  let lapNumber = 0;
+  let lastSignedDist = null;
+
+  function recolorGates() {
+    gateMeshes.forEach((m, i) => {
+      const mat = m.material;
+      if (i === currentGateIndex) { mat.color.set(COLOR_NEXT); mat.emissive.set(COLOR_NEXT); mat.emissiveIntensity = EMISSIVE_NEXT; }
+      else if (i < currentGateIndex) { mat.color.set(COLOR_CLEARED); mat.emissive.set(COLOR_CLEARED); mat.emissiveIntensity = EMISSIVE_CLEARED; }
+      else { mat.color.set(COLOR_FUTURE); mat.emissive.set(COLOR_FUTURE); mat.emissiveIntensity = EMISSIVE_FUTURE; }
+    });
+  }
+
+  function updateLapLogic(pos) {
+    const centre = gateCentres[currentGateIndex];
+    const normal = gateNormals[currentGateIndex];
+    const diff = new THREE.Vector3(...pos).sub(centre);
+    const signedDist = diff.dot(normal);
+    const lateralDist = Math.sqrt(Math.max(0, diff.lengthSq() - signedDist*signedDist));
+    const withinRadius = lateralDist < CLEAR_XY_RADIUS;
+    const withinThickness = Math.abs(signedDist) < GATE_THICKNESS_M;
+    const justCrossed = lastSignedDist !== null
+      ? (lastSignedDist < 0 && signedDist >= 0) || (lastSignedDist >= 0 && signedDist < 0)
+      : false;
+
+    if (withinRadius && withinThickness && (justCrossed || lastSignedDist === null)) {
+      if (lapStart === null) lapStart = performance.now();
+      const lapTimeMs = performance.now() - lapStart;
+      emit('gateCleared', { gateIndex: currentGateIndex, lapTimeMs });
+      currentGateIndex++;
+      if (currentGateIndex >= GATE_DEFS.length) {
+        emit('lapComplete', { lapTimeMs, lapNumber });
+        lapNumber++;
+        currentGateIndex = 0;
+        lapStart = performance.now();
+      }
+      recolorGates();
+      lastSignedDist = null;
+      return;
+    }
+    lastSignedDist = signedDist;
+  }
+
+  // ── Event log ──────────────────────────────────────────────────────────────
+  const eventsDiv = document.getElementById('events');
+  function logEvent(msg) {
+    const line = document.createElement('div');
+    line.textContent = `[${new Date().toISOString().slice(11,23)}] ${msg}`;
+    eventsDiv.appendChild(line);
+    eventsDiv.scrollTop = eventsDiv.scrollHeight;
+    if (eventsDiv.children.length > 30) eventsDiv.removeChild(eventsDiv.children[1]);
+  }
+
+  on('gateCleared', ({ gateIndex, lapTimeMs }) =>
+    logEvent(`gateCleared  gate=${gateIndex}  lapTime=${lapTimeMs.toFixed(0)} ms`));
+  on('lapComplete', ({ lapTimeMs, lapNumber: ln }) =>
+    logEvent(`LAP COMPLETE  lap=${ln}  time=${lapTimeMs.toFixed(0)} ms`));
+
+  // ── UI controls ───────────────────────────────────────────────────────────
+  const gateSlider    = document.getElementById('gateSlider');
+  const progressSlider = document.getElementById('progressSlider');
+  const gateLabel     = document.getElementById('gateLabel');
+  const progressLabel = document.getElementById('progressLabel');
+  const infoDiv       = document.getElementById('info');
+
+  let selectedGate = 0;
+  let progress = -1;
+
+  gateSlider.max = GATE_DEFS.length - 1;
+  gateSlider.addEventListener('input', () => {
+    selectedGate = parseInt(gateSlider.value);
+    gateLabel.textContent = selectedGate;
+    progressSlider.value = -1;
+    progress = -1;
+    lastSignedDist = null;
+  });
+  progressSlider.addEventListener('input', () => {
+    progress = parseFloat(progressSlider.value);
+    progressLabel.textContent = progress.toFixed(2);
+  });
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+  function animate() {
+    requestAnimationFrame(animate);
+
+    // Position drone along the selected gate's normal at the given progress
+    const def = GATE_DEFS[selectedGate];
+    const normal = gateNormals[selectedGate];
+    const centre = gateCentres[selectedGate];
+    const dronePos = [
+      centre.x + normal.x * progress * 1.5,
+      def.position[1],
+      centre.z + normal.z * progress * 1.5,
+    ];
+    droneMesh.position.set(...dronePos);
+
+    updateLapLogic(dronePos);
+
+    infoDiv.textContent =
+      `Drone: (${dronePos.map(v=>v.toFixed(1)).join(', ')})\n` +
+      `Current gate: ${currentGateIndex}  Lap: ${lapNumber}\n` +
+      `Gate ${selectedGate} normal: (${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)})`;
+
+    // Pulse the current target gate
+    const mat = gateMeshes[currentGateIndex].material;
+    mat.emissiveIntensity = EMISSIVE_NEXT * (1.0 + 0.35 * Math.sin(performance.now() * 0.004));
+
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+</script>
+</body>
+</html>
