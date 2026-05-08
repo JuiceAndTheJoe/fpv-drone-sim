@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UI Test — FPV Drone Sim</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0e16;
+      color: #e8edf4;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 32px;
+    }
+    h1 { color: #10f1f9; font-size: 1.4rem; margin-bottom: 8px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+    button {
+      padding: 10px 22px;
+      border-radius: 8px;
+      border: 1px solid rgba(16,241,249,0.4);
+      background: transparent;
+      color: #10f1f9;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: rgba(16,241,249,0.12); }
+    #log {
+      margin-top: 20px;
+      width: 100%;
+      max-width: 500px;
+      background: rgba(10,14,22,0.8);
+      border: 1px solid rgba(16,241,249,0.15);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 0.78rem;
+      color: #6e8a9e;
+      font-family: monospace;
+      min-height: 100px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>UI Overlays Test</h1>
+  <div class="controls">
+    <button id="btn-onboarding">Show Onboarding</button>
+    <button id="btn-menu">Toggle Menu (Esc)</button>
+    <button id="btn-mobile">Show Rotate Prompt</button>
+    <button id="btn-reset-ob">Reset fpvSimOnboarded</button>
+  </div>
+  <div id="log">Events will appear here…</div>
+
+  <script type="module">
+    // Import modules from the src directory via Vite dev server
+    // When opened via `npm run dev`, Vite resolves these imports.
+    import { createMenu } from '/src/ui/menu.ts';
+    import { createOnboarding } from '/src/ui/onboarding.ts';
+    import { createMobileHelpers } from '/src/ui/mobile.ts';
+    import { on } from '/src/shared/eventBus.ts';
+
+    const log = document.getElementById('log');
+    function addLog(msg) {
+      const ts = new Date().toLocaleTimeString();
+      log.textContent = `[${ts}] ${msg}\n` + log.textContent;
+    }
+
+    on('paused',       ()      => addLog('EVENT: paused'));
+    on('resumed',      ()      => addLog('EVENT: resumed'));
+    on('reset',        ()      => addLog('EVENT: reset'));
+    on('modeChanged',  ({mode}) => addLog(`EVENT: modeChanged → ${mode}`));
+
+    const menu = createMenu();
+    menu.attach();
+
+    const onboarding = createOnboarding();
+
+    const mobile = createMobileHelpers();
+    mobile.attach();
+
+    document.getElementById('btn-onboarding').addEventListener('click', () => {
+      localStorage.removeItem('fpvSimOnboarded');
+      onboarding.detach();
+      onboarding.attach();
+    });
+
+    document.getElementById('btn-menu').addEventListener('click', () => {
+      // Simulate Esc key
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+    });
+
+    document.getElementById('btn-mobile').addEventListener('click', () => {
+      // Temporarily detach/re-attach to show the prompt regardless of orientation
+      mobile.detach();
+      // Patch: directly inject the prompt element for testing
+      const el = document.createElement('div');
+      el.id = 'fpv-rotate-prompt-test';
+      el.style.cssText = 'position:fixed;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;background:rgba(4,6,12,.95);color:#e8edf4;font-family:sans-serif;flex-direction:column;gap:16px;';
+      el.innerHTML = '<div style="font-size:3rem">📱</div><h2 style="color:#10f1f9">Rotate to Landscape</h2><button onclick="this.closest(\'#fpv-rotate-prompt-test\').remove()" style="padding:8px 20px;border:1px solid rgba(16,241,249,.4);border-radius:8px;background:transparent;color:#10f1f9;cursor:pointer;">Dismiss</button>';
+      document.body.appendChild(el);
+      mobile.attach();
+    });
+
+    document.getElementById('btn-reset-ob').addEventListener('click', () => {
+      localStorage.removeItem('fpvSimOnboarded');
+      addLog('Cleared fpvSimOnboarded');
+    });
+
+    addLog('UI test page loaded. Press Esc to toggle menu.');
+  </script>
+</body>
+</html>

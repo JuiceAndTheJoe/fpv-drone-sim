@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audio Test — FPV Drone Sim</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0e16;
+      color: #e8edf4;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 32px;
+    }
+    h1 { color: #10f1f9; font-size: 1.4rem; }
+    p { font-size: 0.85rem; color: #6e8a9e; text-align: center; max-width: 380px; }
+    .card {
+      background: rgba(10,14,22,0.6);
+      border: 1px solid rgba(16,241,249,0.2);
+      border-radius: 14px;
+      padding: 28px 32px;
+      width: 100%;
+      max-width: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    label {
+      font-size: 0.82rem;
+      color: #a8b8c8;
+      min-width: 90px;
+      font-weight: 600;
+    }
+    input[type=range] {
+      flex: 1;
+      accent-color: #10f1f9;
+    }
+    .val {
+      min-width: 42px;
+      text-align: right;
+      font-size: 0.8rem;
+      color: #10f1f9;
+      font-variant-numeric: tabular-nums;
+    }
+    button {
+      padding: 10px 22px;
+      border-radius: 8px;
+      border: 1px solid rgba(16,241,249,0.4);
+      background: rgba(16,241,249,0.12);
+      color: #10f1f9;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s;
+      letter-spacing: 0.04em;
+    }
+    button:hover { background: rgba(16,241,249,0.22); }
+    #status {
+      font-size: 0.78rem;
+      color: #6e8a9e;
+      font-family: monospace;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>Motor Audio Test</h1>
+  <p>Click "Start Audio" first (browser autoplay policy), then drag the RPM slider.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>RPM</label>
+      <input type="range" id="rpm" min="0" max="100" value="0" step="1" />
+      <span class="val" id="rpm-val">0%</span>
+    </div>
+    <div class="row">
+      <label>Volume</label>
+      <input type="range" id="vol" min="0" max="100" value="70" step="1" />
+      <span class="val" id="vol-val">70%</span>
+    </div>
+    <button id="start-btn">Start Audio</button>
+    <button id="blip-btn">Simulate Gate Cleared</button>
+    <div id="status">AudioContext: not started</div>
+  </div>
+
+  <script type="module">
+    import { createMotorAudio } from '/src/audio/motor.ts';
+    import { emit } from '/src/shared/eventBus.ts';
+
+    const motor = createMotorAudio();
+    const status = document.getElementById('status');
+
+    document.getElementById('start-btn').addEventListener('click', () => {
+      // Dispatch userGesture so motor.ts can resume AudioContext
+      window.dispatchEvent(new Event('userGesture'));
+      motor.attach();
+      status.textContent = 'AudioContext: started';
+      document.getElementById('start-btn').textContent = 'Audio running';
+    });
+
+    const rpmSlider = document.getElementById('rpm');
+    const rpmVal   = document.getElementById('rpm-val');
+    rpmSlider.addEventListener('input', () => {
+      const v = parseInt(rpmSlider.value, 10);
+      rpmVal.textContent = `${v}%`;
+      motor.setRpm(v / 100);
+      status.textContent = `RPM: ${v}%  |  carrier: ${(80 + (v/100)*320).toFixed(0)} Hz`;
+    });
+
+    const volSlider = document.getElementById('vol');
+    const volVal    = document.getElementById('vol-val');
+    volSlider.addEventListener('input', () => {
+      const v = parseInt(volSlider.value, 10);
+      volVal.textContent = `${v}%`;
+      motor.setVolume(v);
+    });
+
+    document.getElementById('blip-btn').addEventListener('click', () => {
+      emit('gateCleared', { gateIndex: 0, lapTimeMs: 0 });
+      status.textContent = 'Gate cleared blip fired!';
+    });
+  </script>
+</body>
+</html>
